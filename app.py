@@ -1,224 +1,326 @@
 import streamlit as st
 import pandas as pd
 import plotly.express as px
-import plotly.graph_objects as go
+from pathlib import Path
+from typing import Iterable, List, Optional
 
-# Set page configuration
-st.set_page_config(page_title="Game Optimization Analysis", layout="wide")
+st.set_page_config(page_title="Optimization Study Dashboard", layout="wide")
 
-# Load data
-@st.cache_data
-def load_data():
-    return pd.read_csv("summary.csv")
+DATA_DIR = Path("optuna")
+STUDY_LABELS = {
+    "Max Rounds": "max_rounds",
+    "Multi Objective": "multi_objective",
+}
+ALGORITHM_LABELS = {
+    "random": "Random",
+    "tpe": "TPE",
+    "nsga2-blend": "NSGA-II (blend)",
+    "nsga2-uniform": "NSGA-II (uniform)",
+}
+ALGORITHM_COLORS = {
+    "Random": "#1f77b4",
+    "TPE": "#ff7f0e",
+    "NSGA-II (blend)": "#2ca02c",
+    "NSGA-II (uniform)": "#d62728",
+}
+PARAM_COLUMNS = [
+    "params_enemyHp",
+    "params_enemyMeleeDamage",
+    "params_enemyShotDamage",
+    "params_playerHp",
+    "params_playerMeleeDamage",
+    "params_playerShotDamage",
+]
 
-df = load_data()
 
-# Title
-st.title("🎮 Game Optimization Analysis Dashboard")
-st.markdown("---")
+def chunk_list(items: List[str], chunk_size: int) -> Iterable[List[str]]:
+    for start in range(0, len(items), chunk_size):
+        yield items[start : start + chunk_size]
 
-# Sidebar for filters
-st.sidebar.header("⚙️ Configuration")
 
-# Get unique resolvers
-resolvers = df['resolver'].unique().tolist()
-selected_resolver = st.sidebar.selectbox("Resolver", resolvers)
+def identify_pareto(df: pd.DataFrame) -> pd.Series:
+    ordered = df.sort_values(["final_hp_error", "max_rounds"], ascending=[True, False])
+    best_rounds = float("-inf")
+    pareto_indices: List[int] = []
+    for index, row in ordered.iterrows():
+        rounds = row.get("max_rounds")
+        if pd.isna(rounds):
+            continue
+        if rounds >= best_rounds:
+            pareto_indices.append(index)
+            best_rounds = rounds
+    mask = pd.Series(False, index=df.index)
+    if pareto_indices:
+        mask.loc[pareto_indices] = True
+    return mask
 
-st.sidebar.markdown("---")
-st.sidebar.info("📊 The graphs below show how different parameter values affect game outcomes.")
 
-# Filter data based on resolver only
-filtered_df = df[df['resolver'] == selected_resolver]
+@st.cache_data(show_spinner=False)
+def load_study_data(study_key: str) -> pd.DataFrame:
+    study_path = DATA_DIR / study_key
+    if not study_path.exists():
+        return pd.DataFrame()
 
-# Main content area
-if len(filtered_df) > 0:
-    # Key metrics (overall averages)
-    col1, col2, col3, col4 = st.columns(4)
-    
-    with col1:
-        st.metric("Avg HP Lost", f"{filtered_df['hp_lost'].mean():.2f}")
-    
-    with col2:
-        st.metric("Avg Enemies Killed", f"{filtered_df['killed_enemies'].mean():.2f}")
-    
-    with col3:
-        st.metric("Victory Rate", f"{filtered_df['victory'].mean():.1%}")
-    
-    with col4:
-        st.metric("Avg Rounds", f"{filtered_df['rounds'].mean():.2f}")
-    
-    st.markdown("---")
-    
-    # Define parameters to analyze
-    parameters = {
-        'playerMeleeDamage': 'Player Melee Damage',
-        'playerShotDamage': 'Player Shot Damage',
-        'playerHp': 'Player HP',
-        'enemyMeleeDamage': 'Enemy Melee Damage',
-        'enemyShotDamage': 'Enemy Shot Damage',
-        'enemyHp': 'Enemy HP'
-    }
-    
-    # Create tabs for different metrics
-    tab1, tab2, tab3, tab4 = st.tabs(["📉 HP Lost", "🎯 Enemies Killed", "🏆 Victory Rate", "⏱️ Rounds"])
-    
-    with tab1:
-        st.subheader("HP Lost vs Parameters")
-        for param, label in parameters.items():
-            # Group by parameter and calculate mean
-            grouped = filtered_df.groupby(param).agg({
-                'hp_lost': ['mean', 'std', 'count']
-            }).reset_index()
-            grouped.columns = [param, 'mean', 'std', 'count']
-            
-            fig = px.line(
-                grouped,
-                x=param,
-                y='mean',
-                title=f"Average HP Lost vs {label}",
-                labels={param: label, 'mean': 'Average HP Lost'},
-                markers=True
-            )
-            
-            # Add error bars for standard deviation
-            fig.add_scatter(
-                x=grouped[param],
-                y=grouped['mean'] + grouped['std'],
-                mode='lines',
-                line=dict(width=0),
-                showlegend=False,
-                hoverinfo='skip'
-            )
-            fig.add_scatter(
-                x=grouped[param],
-                y=grouped['mean'] - grouped['std'],
-                mode='lines',
-                line=dict(width=0),
-                fill='tonexty',
-                fillcolor='rgba(68, 68, 68, 0.2)',
-                showlegend=False,
-                hoverinfo='skip'
-            )
-            
-            fig.update_layout(height=400)
-            st.plotly_chart(fig, use_container_width=True)
-    
-    with tab2:
-        st.subheader("Enemies Killed vs Parameters")
-        for param, label in parameters.items():
-            # Group by parameter and calculate mean
-            grouped = filtered_df.groupby(param).agg({
-                'killed_enemies': ['mean', 'std', 'count']
-            }).reset_index()
-            grouped.columns = [param, 'mean', 'std', 'count']
-            
-            fig = px.line(
-                grouped,
-                x=param,
-                y='mean',
-                title=f"Average Enemies Killed vs {label}",
-                labels={param: label, 'mean': 'Average Enemies Killed'},
-                markers=True,
-                color_discrete_sequence=['#4ECDC4']
-            )
-            
-            # Add error bars for standard deviation
-            fig.add_scatter(
-                x=grouped[param],
-                y=grouped['mean'] + grouped['std'],
-                mode='lines',
-                line=dict(width=0),
-                showlegend=False,
-                hoverinfo='skip'
-            )
-            fig.add_scatter(
-                x=grouped[param],
-                y=grouped['mean'] - grouped['std'],
-                mode='lines',
-                line=dict(width=0),
-                fill='tonexty',
-                fillcolor='rgba(78, 205, 196, 0.2)',
-                showlegend=False,
-                hoverinfo='skip'
-            )
-            
-            fig.update_layout(height=400)
-            st.plotly_chart(fig, use_container_width=True)
-    
-    with tab3:
-        st.subheader("Victory Rate vs Parameters")
-        for param, label in parameters.items():
-            # Group by parameter and calculate victory rate
-            grouped = filtered_df.groupby(param).agg({
-                'victory': ['mean', 'count']
-            }).reset_index()
-            grouped.columns = [param, 'victory_rate', 'count']
-            
-            fig = px.line(
-                grouped,
-                x=param,
-                y='victory_rate',
-                title=f"Victory Rate vs {label}",
-                labels={param: label, 'victory_rate': 'Victory Rate'},
-                markers=True,
-                color_discrete_sequence=['#95E1D3']
-            )
-            
-            fig.update_yaxes(tickformat='.0%')
-            fig.update_layout(height=400)
-            st.plotly_chart(fig, use_container_width=True)
-    
-    with tab4:
-        st.subheader("Number of Rounds vs Parameters")
-        for param, label in parameters.items():
-            # Group by parameter and calculate mean rounds
-            grouped = filtered_df.groupby(param).agg({
-                'rounds': ['mean', 'std', 'count']
-            }).reset_index()
-            grouped.columns = [param, 'mean', 'std', 'count']
-            
-            fig = px.line(
-                grouped,
-                x=param,
-                y='mean',
-                title=f"Average Rounds vs {label}",
-                labels={param: label, 'mean': 'Average Rounds'},
-                markers=True,
-                color_discrete_sequence=['#F38181']
-            )
-            
-            # Add error bars for standard deviation
-            fig.add_scatter(
-                x=grouped[param],
-                y=grouped['mean'] + grouped['std'],
-                mode='lines',
-                line=dict(width=0),
-                showlegend=False,
-                hoverinfo='skip'
-            )
-            fig.add_scatter(
-                x=grouped[param],
-                y=grouped['mean'] - grouped['std'],
-                mode='lines',
-                line=dict(width=0),
-                fill='tonexty',
-                fillcolor='rgba(243, 129, 129, 0.2)',
-                showlegend=False,
-                hoverinfo='skip'
-            )
-            
-            fig.update_layout(height=400)
-            st.plotly_chart(fig, use_container_width=True)
-    
-    # Show raw data
-    with st.expander("📋 View Raw Data"):
-        st.dataframe(filtered_df, use_container_width=True)
+    frames: List[pd.DataFrame] = []
+    for csv_path in study_path.glob("*_study.csv"):
+        df = pd.read_csv(csv_path)
+        algo_key = csv_path.stem.replace("_study", "")
+        algorithm_name = ALGORITHM_LABELS.get(
+            algo_key, algo_key.replace("-", " ").title()
+        )
+        df["algorithm"] = algorithm_name
+        df["study"] = study_key
 
-    
+        if "duration" in df.columns:
+            df["duration_seconds"] = pd.to_timedelta(
+                df["duration"], errors="coerce"
+            ).dt.total_seconds()
+
+        if "value" in df.columns:
+            df["max_rounds"] = df["value"]
+        if "values_0" in df.columns:
+            df["max_rounds"] = df["values_0"]
+        if "values_1" in df.columns:
+            df["final_hp_error"] = df["values_1"]
+
+        drop_cols = [col for col in df.columns if ":" in col]
+        if drop_cols:
+            df = df.drop(columns=drop_cols)
+
+        frames.append(df)
+
+    if not frames:
+        return pd.DataFrame()
+
+    data = pd.concat(frames, ignore_index=True)
+    for param in PARAM_COLUMNS:
+        if param in data.columns:
+            data[param] = pd.to_numeric(data[param], errors="coerce")
+    return data
+
+
+def format_duration(value: Optional[float]) -> str:
+    if value is None or pd.isna(value):
+        return "-"
+    return f"{value:.1f} s"
+
+
+st.title("Optimization Study Dashboard")
+st.caption("Explore Optuna trials by study, algorithm, and parameter set.")
+
+with st.sidebar:
+    st.header("Controls")
+    study_label = st.selectbox("Study", list(STUDY_LABELS.keys()))
+    study_key = STUDY_LABELS[study_label]
+    data = load_study_data(study_key)
+
+    if data.empty:
+        st.warning("No trials found for the selected study.")
+        st.stop()
+
+    available_algorithms = sorted(data["algorithm"].unique())
+    selected_algorithms = st.multiselect(
+        "Algorithms",
+        options=available_algorithms,
+        default=available_algorithms,
+    )
+
+    if not selected_algorithms:
+        st.warning("Pick at least one algorithm to continue.")
+        st.stop()
+
+    filtered = data[data["algorithm"].isin(selected_algorithms)].copy()
+
+    if filtered.empty:
+        st.warning("No trials match the selected filters.")
+        st.stop()
+
+has_final_hp_error = "final_hp_error" in filtered.columns
+
+metric_columns = 4 if has_final_hp_error else 3
+metric_containers = st.columns(metric_columns)
+metric_containers[0].metric("Trials", len(filtered))
+metric_containers[1].metric("Best Max Rounds", f"{filtered['max_rounds'].max():.2f}")
+metric_containers[2].metric(
+    "Median Max Rounds", f"{filtered['max_rounds'].median():.2f}"
+)
+if has_final_hp_error:
+    metric_containers[3].metric(
+        "Lowest Final HP Error", f"{filtered['final_hp_error'].min():.2f}"
+    )
+
+filtered["is_pareto"] = False
+if has_final_hp_error:
+    pareto_candidates = filtered.dropna(subset=["final_hp_error", "max_rounds"])
+    if not pareto_candidates.empty:
+        pareto_mask = identify_pareto(pareto_candidates)
+        filtered.loc[pareto_mask.index, "is_pareto"] = pareto_mask
+
+summary_agg = {
+    "number": "count",
+    "max_rounds": "max",
+}
+if has_final_hp_error:
+    summary_agg["final_hp_error"] = "min"
+
+summary = (
+    filtered.groupby("algorithm", as_index=False)
+    .agg(summary_agg)
+    .rename(
+        columns={
+            "number": "trials",
+            "max_rounds": "best_max_rounds",
+            "final_hp_error": "lowest_final_hp_error",
+        }
+    )
+)
+
+st.subheader("Algorithm Snapshot")
+summary_formatters = {
+    "best_max_rounds": "{:.2f}",
+}
+if has_final_hp_error and "lowest_final_hp_error" in summary.columns:
+    summary_formatters["lowest_final_hp_error"] = "{:.2f}"
+
+st.dataframe(summary.style.format(summary_formatters), hide_index=True)
+
+st.subheader("Performance Overview")
+
+sorted_trials = filtered.sort_values("number")
+param_hover_cols = [col for col in PARAM_COLUMNS if col in sorted_trials.columns]
+
+if has_final_hp_error:
+    pareto_fig = px.scatter(
+        sorted_trials,
+        x="max_rounds",
+        y="final_hp_error",
+        color="algorithm",
+        color_discrete_map=ALGORITHM_COLORS,
+        hover_data=["number", "duration_seconds"] + param_hover_cols,
+        title="Pareto Front: Max Rounds vs Final HP Error",
+    )
+    for trace in pareto_fig.data:
+        trace_mask = sorted_trials["algorithm"] == trace.name
+        pareto_flags = sorted_trials.loc[trace_mask, "is_pareto"].tolist()
+        line_colors = ["#000000" if flag else "rgba(0,0,0,0)" for flag in pareto_flags]
+        line_widths = [1 if flag else 0 for flag in pareto_flags]
+        trace.update(
+            marker={
+                "line": {
+                    "color": line_colors,
+                    "width": line_widths,
+                }
+            }
+        )
+    pareto_fig.update_layout(legend_title_text="Algorithm")
+
+    rounds_over_trials_fig = px.line(
+        sorted_trials,
+        x="number",
+        y="max_rounds",
+        color="algorithm",
+        color_discrete_map=ALGORITHM_COLORS,
+        markers=True,
+        hover_data=["duration_seconds", "final_hp_error"] + param_hover_cols,
+        title="Max Rounds vs Trial Number",
+    )
+    rounds_over_trials_fig.update_layout(
+        xaxis_title="Trial Number", legend_title_text="Algorithm"
+    )
+
+    error_over_trials_fig = px.line(
+        sorted_trials,
+        x="number",
+        y="final_hp_error",
+        color="algorithm",
+        color_discrete_map=ALGORITHM_COLORS,
+        markers=True,
+        hover_data=["duration_seconds", "max_rounds"] + param_hover_cols,
+        title="Final HP Error vs Trial Number",
+    )
+    error_over_trials_fig.update_layout(
+        xaxis_title="Trial Number", legend_title_text="Algorithm"
+    )
+
+    overview_columns = st.columns(2)
+    overview_columns[0].plotly_chart(pareto_fig, use_container_width=True)
+    overview_columns[1].plotly_chart(rounds_over_trials_fig, use_container_width=True)
+    st.plotly_chart(error_over_trials_fig, use_container_width=True)
 else:
-    st.warning("⚠️ No data matches the selected parameters. Please adjust the filters.")
-    st.info("💡 Try different combinations of parameters to see the results.")
+    rounds_over_trials_fig = px.line(
+        sorted_trials,
+        x="number",
+        y="max_rounds",
+        color="algorithm",
+        color_discrete_map=ALGORITHM_COLORS,
+        markers=True,
+        hover_data=["duration_seconds"] + param_hover_cols,
+        title="Max Rounds vs Trial Number",
+    )
+    rounds_over_trials_fig.update_layout(
+        xaxis_title="Trial Number", legend_title_text="Algorithm"
+    )
+    st.plotly_chart(rounds_over_trials_fig, use_container_width=True)
 
-# Footer
-st.markdown("---")
-st.markdown("*Dashboard created with Streamlit and Plotly*")
+st.subheader("Parameter Effects")
+
+metric_options = {"Max Rounds": "max_rounds", "Duration (s)": "duration_seconds"}
+if has_final_hp_error:
+    metric_options["Final HP Error"] = "final_hp_error"
+
+metric_label = st.selectbox("Metric", list(metric_options.keys()))
+target_metric = metric_options[metric_label]
+
+selected_params = st.multiselect(
+    "Parameters",
+    options=[col for col in PARAM_COLUMNS if col in filtered.columns],
+    default=[col for col in PARAM_COLUMNS if col in filtered.columns],
+)
+
+if selected_params:
+    for row in chunk_list(selected_params, 2):
+        chart_columns = st.columns(len(row))
+        for index, param_col in enumerate(row):
+            param_fig = px.scatter(
+                filtered,
+                x=param_col,
+                y=target_metric,
+                color="algorithm",
+                color_discrete_map=ALGORITHM_COLORS,
+                hover_data=["number", "duration_seconds", "max_rounds"]
+                + (["final_hp_error"] if has_final_hp_error else [])
+                + [
+                    col
+                    for col in PARAM_COLUMNS
+                    if col in filtered.columns and col != param_col
+                ],
+                title=f"{metric_label} vs {param_col}",
+            )
+            param_fig.update_layout(legend_title_text="Algorithm")
+            chart_columns[index].plotly_chart(param_fig, use_container_width=True)
+else:
+    st.info("Select at least one parameter to see how it relates to the chosen metric.")
+
+st.subheader("Raw Trials")
+
+display_columns = [
+    "number",
+    "algorithm",
+    "max_rounds",
+    "final_hp_error",
+    "duration_seconds",
+    "duration",
+    "datetime_start",
+    "datetime_complete",
+] + [col for col in PARAM_COLUMNS if col in filtered.columns]
+
+display_columns = [col for col in display_columns if col in filtered.columns]
+display_frame = filtered[display_columns].copy()
+if "duration_seconds" in display_frame.columns:
+    display_frame["duration_seconds"] = display_frame["duration_seconds"].map(
+        format_duration
+    )
+
+st.dataframe(display_frame, use_container_width=True)
+
+st.caption("Data source: Optuna study exports located in the optuna/ directory.")
