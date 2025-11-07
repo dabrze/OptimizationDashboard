@@ -46,15 +46,13 @@ def nearest_to_target(series: pd.Series, target: float) -> Optional[float]:
     return float(non_null.loc[closest_index])
 
 
-def final_hp_one_error_closest_to_one(values: pd.Series) -> float:
+def final_hp_closest_to_one(values: pd.Series) -> float:
     closest_value = nearest_to_target(values, 1.0)
     return closest_value if closest_value is not None else float("nan")
 
 
 def identify_pareto(df: pd.DataFrame) -> pd.Series:
-    ordered = df.sort_values(
-        ["final_hp_one_error", "max_rounds"], ascending=[True, False]
-    )
+    ordered = df.sort_values(["final_hp", "max_rounds"], ascending=[True, False])
     best_rounds = float("-inf")
     pareto_indices: List[int] = []
     for index, row in ordered.iterrows():
@@ -96,13 +94,10 @@ def load_study_data(study_key: str) -> pd.DataFrame:
         if "values_0" in df.columns:
             df["max_rounds"] = df["values_0"]
         if "values_1" in df.columns:
-            df["final_hp_one_error"] = df["values_1"]
+            df["final_hp"] = df["values_1"]
 
-        if (
-            "final_hp_one_error_error" in df.columns
-            and "final_hp_one_error" not in df.columns
-        ):
-            df = df.rename(columns={"final_hp_one_error_error": "final_hp_one_error"})
+        if "final_hp_error" in df.columns and "final_hp" not in df.columns:
+            df = df.rename(columns={"final_hp_error": "final_hp"})
 
         drop_cols = [col for col in df.columns if ":" in col]
         if drop_cols:
@@ -156,32 +151,30 @@ with st.sidebar:
         st.warning("No trials match the selected filters.")
         st.stop()
 
-has_final_hp_one_error = "final_hp_one_error" in filtered.columns
+has_final_hp = "final_hp" in filtered.columns
 
-metric_columns = 4 if has_final_hp_one_error else 3
+metric_columns = 4 if has_final_hp else 3
 metric_containers = st.columns(metric_columns)
 metric_containers[0].metric("Trials", len(filtered))
 metric_containers[1].metric("Best Max Rounds", f"{filtered['max_rounds'].max():.2f}")
 metric_containers[2].metric(
     "Median Max Rounds", f"{filtered['max_rounds'].median():.2f}"
 )
-if has_final_hp_one_error:
-    closest_final_hp_one_error_value = nearest_to_target(
-        filtered["final_hp_one_error"], 1.0
-    )
+if has_final_hp:
+    closest_final_hp_value = nearest_to_target(filtered["final_hp"], 1.0)
     metric_containers[3].metric(
         "Final HP Closest to 1",
         (
-            f"{closest_final_hp_one_error_value:.2f}"
-            if closest_final_hp_one_error_value is not None
-            and not pd.isna(closest_final_hp_one_error_value)
+            f"{closest_final_hp_value:.2f}"
+            if closest_final_hp_value is not None
+            and not pd.isna(closest_final_hp_value)
             else "-"
         ),
     )
 
 filtered["is_pareto"] = False
-if has_final_hp_one_error:
-    pareto_candidates = filtered.dropna(subset=["final_hp_one_error", "max_rounds"])
+if has_final_hp:
+    pareto_candidates = filtered.dropna(subset=["final_hp", "max_rounds"])
     if not pareto_candidates.empty:
         pareto_mask = identify_pareto(pareto_candidates)
         filtered.loc[pareto_mask.index, "is_pareto"] = pareto_mask
@@ -190,8 +183,8 @@ summary_agg = {
     "number": "count",
     "max_rounds": "max",
 }
-if has_final_hp_one_error:
-    summary_agg["final_hp_one_error"] = final_hp_one_error_closest_to_one
+if has_final_hp:
+    summary_agg["final_hp"] = final_hp_closest_to_one
 
 summary = (
     filtered.groupby("algorithm", as_index=False)
@@ -200,7 +193,7 @@ summary = (
         columns={
             "number": "trials",
             "max_rounds": "best_max_rounds",
-            "final_hp_one_error": "final_hp_one_error_closest_to_one",
+            "final_hp": "final_hp_closest_to_one",
         }
     )
 )
@@ -209,8 +202,8 @@ st.subheader("Algorithm Snapshot")
 summary_formatters = {
     "best_max_rounds": "{:.2f}",
 }
-if has_final_hp_one_error and "final_hp_one_error_closest_to_one" in summary.columns:
-    summary_formatters["final_hp_one_error_closest_to_one"] = "{:.2f}"
+if has_final_hp and "final_hp_closest_to_one" in summary.columns:
+    summary_formatters["final_hp_closest_to_one"] = "{:.2f}"
 
 st.dataframe(summary.style.format(summary_formatters), hide_index=True)
 
@@ -219,31 +212,29 @@ st.subheader("Performance Overview")
 sorted_trials = filtered.sort_values("number")
 param_hover_cols = [col for col in PARAM_COLUMNS if col in sorted_trials.columns]
 
-if has_final_hp_one_error:
+if has_final_hp:
     pareto_fig = px.scatter(
         sorted_trials,
         x="max_rounds",
-        y="final_hp_one_error",
+        y="final_hp",
         color="algorithm",
         color_discrete_map=ALGORITHM_COLORS,
         hover_data=["number", "duration_seconds"] + param_hover_cols,
         title="Pareto Front: Max Rounds vs Final HP",
     )
-    min_final_hp_one_error = sorted_trials["final_hp_one_error"].min(skipna=True)
-    y_lower_bound = min(
-        min_final_hp_one_error if pd.notna(min_final_hp_one_error) else 0, 1
+    min_final_hp = sorted_trials["final_hp"].min(skipna=True)
+    y_lower_bound = min(min_final_hp if pd.notna(min_final_hp) else 0, 1)
+    pareto_fig.add_hline(y=1, line_dash="dash", line_color="#666666")
+    pareto_fig.add_hrect(
+        y0=y_lower_bound,
+        y1=1,
+        x0=0,
+        x1=1,
+        xref="paper",
+        fillcolor="rgba(128,128,128,0.15)",
+        layer="below",
+        line_width=0,
     )
-    # pareto_fig.add_hline(y=1, line_dash="dash", line_color="#666666")
-    # pareto_fig.add_hrect(
-    #     y0=y_lower_bound,
-    #     y1=1,
-    #     x0=0,
-    #     x1=1,
-    #     xref="paper",
-    #     fillcolor="rgba(128,128,128,0.15)",
-    #     layer="below",
-    #     line_width=0,
-    # )
     for trace in pareto_fig.data:
         trace_mask = sorted_trials["algorithm"] == trace.name
         pareto_flags = sorted_trials.loc[trace_mask, "is_pareto"].tolist()
@@ -266,7 +257,7 @@ if has_final_hp_one_error:
         color="algorithm",
         color_discrete_map=ALGORITHM_COLORS,
         markers=True,
-        hover_data=["duration_seconds", "final_hp_one_error"] + param_hover_cols,
+        hover_data=["duration_seconds", "final_hp"] + param_hover_cols,
         title="Max Rounds vs Trial Number",
     )
     rounds_over_trials_fig.update_layout(
@@ -276,7 +267,7 @@ if has_final_hp_one_error:
     hp_over_trials_fig = px.line(
         sorted_trials,
         x="number",
-        y="final_hp_one_error",
+        y="final_hp",
         color="algorithm",
         color_discrete_map=ALGORITHM_COLORS,
         markers=True,
@@ -310,8 +301,8 @@ else:
 st.subheader("Parameter Effects")
 
 metric_options = {"Max Rounds": "max_rounds", "Duration (s)": "duration_seconds"}
-if has_final_hp_one_error:
-    metric_options["Final HP"] = "final_hp_one_error"
+if has_final_hp:
+    metric_options["Final HP"] = "final_hp"
 
 metric_label = st.selectbox("Metric", list(metric_options.keys()))
 target_metric = metric_options[metric_label]
@@ -333,7 +324,7 @@ if selected_params:
                 color="algorithm",
                 color_discrete_map=ALGORITHM_COLORS,
                 hover_data=["number", "duration_seconds", "max_rounds"]
-                + (["final_hp_one_error"] if has_final_hp_one_error else [])
+                + (["final_hp"] if has_final_hp else [])
                 + [
                     col
                     for col in PARAM_COLUMNS
@@ -352,7 +343,7 @@ display_columns = [
     "number",
     "algorithm",
     "max_rounds",
-    "final_hp_one_error",
+    "final_hp",
     "duration_seconds",
     "duration",
     "datetime_start",
