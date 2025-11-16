@@ -99,6 +99,12 @@ def load_study_data(study_key: str) -> pd.DataFrame:
         if "final_hp_error" in df.columns and "final_hp" not in df.columns:
             df = df.rename(columns={"final_hp_error": "final_hp"})
 
+        # Rename std columns for easier access
+        if "user_attrs_rounds_std" in df.columns:
+            df = df.rename(columns={"user_attrs_rounds_std": "max_rounds_std"})
+        if "user_attrs_lost_players_std" in df.columns:
+            df = df.rename(columns={"user_attrs_lost_players_std": "final_hp_std"})
+
         drop_cols = [col for col in df.columns if ":" in col]
         if drop_cols:
             df = df.drop(columns=drop_cols)
@@ -126,7 +132,7 @@ st.caption("Explore Optuna trials by study, algorithm, and parameter set.")
 
 with st.sidebar:
     st.header("Controls")
-    study_label = st.selectbox("Study", list(STUDY_LABELS.keys()))
+    study_label = st.selectbox("Study", list(STUDY_LABELS.keys()), index=1)
     study_key = STUDY_LABELS[study_label]
     data = load_study_data(study_key)
 
@@ -250,19 +256,66 @@ if has_final_hp:
         )
     pareto_fig.update_layout(legend_title_text="Algorithm")
 
-    rounds_over_trials_fig = px.line(
-        sorted_trials,
-        x="number",
-        y="max_rounds",
-        color="algorithm",
-        color_discrete_map=ALGORITHM_COLORS,
-        markers=True,
-        hover_data=["duration_seconds", "final_hp"] + param_hover_cols,
-        title="Max Rounds vs Trial Number",
+    # Create scatter plot with error bars for max_rounds vs final_hp
+    has_std_data = (
+        "max_rounds_std" in sorted_trials.columns
+        and "final_hp_std" in sorted_trials.columns
     )
-    rounds_over_trials_fig.update_layout(
-        xaxis_title="Trial Number", legend_title_text="Algorithm"
-    )
+
+    if has_std_data:
+        # Cap error bars so they don't go below 0
+        scatter_data = sorted_trials.copy()
+        scatter_data["max_rounds_error_lower"] = scatter_data.apply(
+            lambda row: (
+                min(row["max_rounds_std"], row["max_rounds"])
+                if pd.notna(row["max_rounds_std"]) and pd.notna(row["max_rounds"])
+                else 0
+            ),
+            axis=1,
+        )
+        scatter_data["max_rounds_error_upper"] = scatter_data["max_rounds_std"].fillna(
+            0
+        )
+        scatter_data["final_hp_error_lower"] = scatter_data.apply(
+            lambda row: (
+                min(row["final_hp_std"], row["final_hp"])
+                if pd.notna(row["final_hp_std"]) and pd.notna(row["final_hp"])
+                else 0
+            ),
+            axis=1,
+        )
+        scatter_data["final_hp_error_upper"] = scatter_data["final_hp_std"].fillna(0)
+
+        rounds_scatter_fig = px.scatter(
+            scatter_data,
+            x="max_rounds",
+            y="final_hp",
+            color="algorithm",
+            color_discrete_map=ALGORITHM_COLORS,
+            error_x="max_rounds_error_upper",
+            error_x_minus="max_rounds_error_lower",
+            error_y="final_hp_error_upper",
+            error_y_minus="final_hp_error_lower",
+            hover_data=["number", "duration_seconds"] + param_hover_cols,
+            title="Max Rounds vs Final HP (with std)",
+        )
+        rounds_scatter_fig.update_traces(
+            error_x=dict(thickness=1.5, color="rgba(0,0,0,0.2)"),
+            error_y=dict(thickness=1.5, color="rgba(0,0,0,0.2)"),
+        )
+        rounds_scatter_fig.update_layout(legend_title_text="Algorithm")
+    else:
+        # Fallback to simple scatter if std data not available
+        rounds_scatter_fig = px.scatter(
+            sorted_trials,
+            x="max_rounds",
+            y="final_hp",
+            color="algorithm",
+            color_discrete_map=ALGORITHM_COLORS,
+            hover_data=["number", "duration_seconds"] + param_hover_cols,
+            title="Max Rounds vs Final HP",
+        )
+        rounds_scatter_fig.update_layout(legend_title_text="Algorithm")
 
     hp_over_trials_fig = px.line(
         sorted_trials,
@@ -280,7 +333,7 @@ if has_final_hp:
 
     overview_columns = st.columns(2)
     overview_columns[0].plotly_chart(pareto_fig, use_container_width=True)
-    overview_columns[1].plotly_chart(rounds_over_trials_fig, use_container_width=True)
+    overview_columns[1].plotly_chart(rounds_scatter_fig, use_container_width=True)
     st.plotly_chart(hp_over_trials_fig, use_container_width=True)
 else:
     rounds_over_trials_fig = px.line(
