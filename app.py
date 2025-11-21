@@ -10,6 +10,7 @@ DATA_DIR = Path("optuna")
 STUDY_LABELS = {
     "Max Rounds": "max_rounds",
     "Multi Objective": "multi_objective",
+    "Multi Objective (Old)": "multi_objective_old",
 }
 ALGORITHM_LABELS = {
     "random": "Random",
@@ -69,7 +70,7 @@ def identify_pareto(df: pd.DataFrame) -> pd.Series:
 
 
 @st.cache_data(show_spinner=False)
-def load_study_data(study_key: str) -> pd.DataFrame:
+def load_study_data(study_key: str, _cache_key: float = 0) -> pd.DataFrame:
     study_path = DATA_DIR / study_key
     if not study_path.exists():
         return pd.DataFrame()
@@ -134,7 +135,16 @@ with st.sidebar:
     st.header("Controls")
     study_label = st.selectbox("Study", list(STUDY_LABELS.keys()), index=1)
     study_key = STUDY_LABELS[study_label]
-    data = load_study_data(study_key)
+
+    # Create cache key based on file modification times
+    study_path = DATA_DIR / study_key
+    cache_key = 0
+    if study_path.exists():
+        csv_files = list(study_path.glob("*_study.csv"))
+        if csv_files:
+            cache_key = max(f.stat().st_mtime for f in csv_files)
+
+    data = load_study_data(study_key, cache_key)
 
     if data.empty:
         st.warning("No trials found for the selected study.")
