@@ -1,6 +1,7 @@
 import streamlit as st
 import pandas as pd
 import plotly.express as px
+import numpy as np
 from pathlib import Path
 from typing import Iterable, List, Optional
 
@@ -11,6 +12,7 @@ STUDY_LABELS = {
     "Max Rounds": "max_rounds",
     "Multi Objective": "multi_objective",
     "Multi Objective (Old)": "multi_objective_old",
+    "Milestone": "milestone",
 }
 ALGORITHM_LABELS = {
     "random": "Random",
@@ -31,6 +33,7 @@ PARAM_COLUMNS = [
     "params_playerHp",
     "params_playerMeleeDamage",
     "params_playerShotDamage",
+    "params_playerShotRange",
 ]
 
 
@@ -50,6 +53,17 @@ def nearest_to_target(series: pd.Series, target: float) -> Optional[float]:
 def final_hp_closest_to_one(values: pd.Series) -> float:
     closest_value = nearest_to_target(values, 1.0)
     return closest_value if closest_value is not None else float("nan")
+
+
+def add_jitter(values: pd.Series, fraction: float = 0.02) -> pd.Series:
+    if values.empty:
+        return values
+    span = values.max() - values.min()
+    if pd.isna(span) or span == 0:
+        span = 1.0
+    scale = span * fraction
+    noise = np.random.uniform(-scale, scale, size=len(values))
+    return values + noise
 
 
 def identify_pareto(df: pd.DataFrame) -> pd.Series:
@@ -133,7 +147,11 @@ st.caption("Explore Optuna trials by study, algorithm, and parameter set.")
 
 with st.sidebar:
     st.header("Controls")
-    study_label = st.selectbox("Study", list(STUDY_LABELS.keys()), index=1)
+    study_labels = list(STUDY_LABELS.keys())
+    default_study_index = (
+        study_labels.index("Milestone") if "Milestone" in study_labels else 0
+    )
+    study_label = st.selectbox("Study", study_labels, index=default_study_index)
     study_key = STUDY_LABELS[study_label]
 
     # Create cache key based on file modification times
@@ -145,6 +163,10 @@ with st.sidebar:
             cache_key = max(f.stat().st_mtime for f in csv_files)
 
     data = load_study_data(study_key, cache_key)
+
+    primary_metric_label = "Max Rounds"
+    if study_key == "milestone":
+        primary_metric_label = "Killed Enemies"
 
     if data.empty:
         st.warning("No trials found for the selected study.")
@@ -163,6 +185,12 @@ with st.sidebar:
 
     filtered = data[data["algorithm"].isin(selected_algorithms)].copy()
 
+    if study_key == "milestone":
+        filtered["Killed enemies"] = filtered["max_rounds"]
+        metric_hover_key = "Killed enemies"
+    else:
+        metric_hover_key = "max_rounds"
+
     if filtered.empty:
         st.warning("No trials match the selected filters.")
         st.stop()
@@ -172,9 +200,11 @@ has_final_hp = "final_hp" in filtered.columns
 metric_columns = 4 if has_final_hp else 3
 metric_containers = st.columns(metric_columns)
 metric_containers[0].metric("Trials", len(filtered))
-metric_containers[1].metric("Best Max Rounds", f"{filtered['max_rounds'].max():.2f}")
+metric_containers[1].metric(
+    f"Best {primary_metric_label}", f"{filtered['max_rounds'].max():.2f}"
+)
 metric_containers[2].metric(
-    "Median Max Rounds", f"{filtered['max_rounds'].median():.2f}"
+    f"Median {primary_metric_label}", f"{filtered['max_rounds'].median():.2f}"
 )
 if has_final_hp:
     closest_final_hp_value = nearest_to_target(filtered["final_hp"], 1.0)
@@ -215,13 +245,16 @@ summary = (
 )
 
 st.subheader("Algorithm Snapshot")
+display_summary = summary.rename(
+    columns={"best_max_rounds": f"best_{primary_metric_label}"}
+)
 summary_formatters = {
-    "best_max_rounds": "{:.2f}",
+    f"best_{primary_metric_label}": "{:.2f}",
 }
 if has_final_hp and "final_hp_closest_to_one" in summary.columns:
     summary_formatters["final_hp_closest_to_one"] = "{:.2f}"
 
-st.dataframe(summary.style.format(summary_formatters), hide_index=True)
+st.dataframe(display_summary.style.format(summary_formatters), hide_index=True)
 
 st.subheader("Performance Overview")
 
@@ -235,7 +268,8 @@ if has_final_hp:
         y="final_hp",
         color="algorithm",
         color_discrete_map=ALGORITHM_COLORS,
-        hover_data=["number", "duration_seconds"] + param_hover_cols,
+        hover_data=["number", "duration_seconds", metric_hover_key]
+        + param_hover_cols,
         title="Pareto Front: Max Rounds vs Final HP",
     )
     min_final_hp = sorted_trials["final_hp"].min(skipna=True)
@@ -306,7 +340,8 @@ if has_final_hp:
             error_x_minus="max_rounds_error_lower",
             error_y="final_hp_error_upper",
             error_y_minus="final_hp_error_lower",
-            hover_data=["number", "duration_seconds"] + param_hover_cols,
+            hover_data=["number", "duration_seconds", metric_hover_key]
+            + param_hover_cols,
             title="Max Rounds vs Final HP (with std)",
         )
         rounds_scatter_fig.update_traces(
@@ -322,7 +357,8 @@ if has_final_hp:
             y="final_hp",
             color="algorithm",
             color_discrete_map=ALGORITHM_COLORS,
-            hover_data=["number", "duration_seconds"] + param_hover_cols,
+            hover_data=["number", "duration_seconds", metric_hover_key]
+            + param_hover_cols,
             title="Max Rounds vs Final HP",
         )
         rounds_scatter_fig.update_layout(legend_title_text="Algorithm")
@@ -334,7 +370,7 @@ if has_final_hp:
         color="algorithm",
         color_discrete_map=ALGORITHM_COLORS,
         markers=True,
-        hover_data=["duration_seconds", "max_rounds"] + param_hover_cols,
+        hover_data=["duration_seconds", metric_hover_key] + param_hover_cols,
         title="Final HP vs Trial Number",
     )
     hp_over_trials_fig.update_layout(
@@ -353,17 +389,65 @@ else:
         color="algorithm",
         color_discrete_map=ALGORITHM_COLORS,
         markers=True,
-        hover_data=["duration_seconds"] + param_hover_cols,
-        title="Max Rounds vs Trial Number",
+        hover_data=["duration_seconds", metric_hover_key] + param_hover_cols,
+        title=f"{primary_metric_label} vs Trial Number",
     )
     rounds_over_trials_fig.update_layout(
-        xaxis_title="Trial Number", legend_title_text="Algorithm"
+        xaxis_title="Trial Number",
+        yaxis_title=primary_metric_label,
+        legend_title_text="Algorithm",
     )
     st.plotly_chart(rounds_over_trials_fig, use_container_width=True)
 
+# Milestone-specific 3D view
+if study_key == "milestone":
+    st.subheader("3D View: Killed Enemies vs Range & Damage")
+    required_cols = {
+        "params_playerShotRange",
+        "params_playerShotDamage",
+        "max_rounds",
+    }
+    if required_cols.issubset(filtered.columns):
+        milestone_hover = [
+            "number",
+            "duration_seconds",
+            metric_hover_key,
+            "params_playerShotRange",
+            "params_playerShotDamage",
+        ]
+        milestone_3d_fig = px.scatter_3d(
+            filtered,
+            x="params_playerShotRange",
+            y="params_playerShotDamage",
+            z="max_rounds",
+            color="algorithm",
+            color_discrete_map=ALGORITHM_COLORS,
+            hover_data=milestone_hover,
+            opacity=0.65,
+            title="Killed Enemies vs Shot Range and Damage",
+        )
+        milestone_3d_fig.update_traces(marker=dict(size=3, opacity=0.6))
+        milestone_3d_fig.update_layout(
+            legend_title_text="Algorithm",
+            height=720,
+            scene=dict(
+                xaxis_title="Player Shot Range",
+                yaxis_title="Player Shot Damage",
+                zaxis_title=primary_metric_label,
+            ),
+        )
+        st.plotly_chart(milestone_3d_fig, use_container_width=True)
+    else:
+        st.info(
+            "3D plot unavailable: missing playerShotRange or playerShotDamage columns in milestone data."
+        )
+
 st.subheader("Parameter Effects")
 
-metric_options = {"Max Rounds": "max_rounds", "Duration (s)": "duration_seconds"}
+metric_options = {
+    primary_metric_label: "max_rounds",
+    "Duration (s)": "duration_seconds",
+}
 if has_final_hp:
     metric_options["Final HP"] = "final_hp"
 
@@ -380,22 +464,29 @@ if selected_params:
     for row in chunk_list(selected_params, 2):
         chart_columns = st.columns(len(row))
         for index, param_col in enumerate(row):
+            plot_df = filtered.copy()
+            plot_df["param_jittered"] = add_jitter(plot_df[param_col])
+
             param_fig = px.scatter(
-                filtered,
-                x=param_col,
+                plot_df,
+                x="param_jittered",
                 y=target_metric,
                 color="algorithm",
                 color_discrete_map=ALGORITHM_COLORS,
-                hover_data=["number", "duration_seconds", "max_rounds"]
+                hover_data=["number", "duration_seconds", metric_hover_key, param_col]
                 + (["final_hp"] if has_final_hp else [])
                 + [
                     col
                     for col in PARAM_COLUMNS
-                    if col in filtered.columns and col != param_col
+                    if col in plot_df.columns and col != param_col
                 ],
                 title=f"{metric_label} vs {param_col}",
             )
-            param_fig.update_layout(legend_title_text="Algorithm")
+            param_fig.update_layout(
+                legend_title_text="Algorithm",
+                xaxis_title=param_col,
+                yaxis_title=metric_label,
+            )
             chart_columns[index].plotly_chart(param_fig, use_container_width=True)
 else:
     st.info("Select at least one parameter to see how it relates to the chosen metric.")
@@ -415,6 +506,9 @@ display_columns = [
 
 display_columns = [col for col in display_columns if col in filtered.columns]
 display_frame = filtered[display_columns].copy()
+if study_key == "milestone" and "max_rounds" in display_frame.columns:
+    display_frame["Killed enemies"] = display_frame["max_rounds"]
+    display_frame = display_frame.drop(columns=["max_rounds"])
 if "duration_seconds" in display_frame.columns:
     display_frame["duration_seconds"] = display_frame["duration_seconds"].map(
         format_duration
